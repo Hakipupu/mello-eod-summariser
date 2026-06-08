@@ -1,6 +1,5 @@
 {
-  "buildCommand": "echo 'No build step required'",
-  "outputDirectory": "docs",
+  "buildCommand": "npm install",
   "functions": {
     "api/proxy.js": {
       "maxDuration": 60
