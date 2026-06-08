@@ -5,13 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Mello House — Weekly EOD Summariser</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.3/xlsx.full.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
     --ink: #1a1612; --paper: #f5f0e8; --cream: #ede7d9;
     --gold: #b8956a; --gold-light: #d4b896; --gold-pale: #f0e4d0;
     --muted: #8a7d6e; --rule: #c8b99a; --white: #fdfaf5;
+    --error: #8b2020;
   }
   html { scroll-behavior: smooth; }
   body { font-family: 'Cormorant Garamond', Georgia, serif; background: var(--paper); color: var(--ink); min-height: 100vh; overflow-x: hidden; }
@@ -39,6 +40,11 @@
   .btn-clear { background: none; border: 1px solid var(--rule); color: var(--muted); padding: 0.85rem 1.8rem; font-family: 'DM Mono', monospace; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; transition: border-color 0.2s, color 0.2s; }
   .btn-clear:hover { border-color: var(--gold); color: var(--gold); }
   .status-msg { font-family: 'DM Mono', monospace; font-size: 0.7rem; color: var(--muted); margin-left: auto; }
+
+  /* Inline error banner — replaces alert() */
+  .error-banner { display: none; margin-top: 1.5rem; background: #fff4f4; border: 1px solid #e8b4b4; border-left: 3px solid var(--error); padding: 0.9rem 1.2rem; font-family: 'DM Mono', monospace; font-size: 0.72rem; color: var(--error); line-height: 1.5; }
+  .error-banner.visible { display: block; }
+  .error-banner strong { display: block; margin-bottom: 0.3rem; letter-spacing: 0.08em; text-transform: uppercase; }
 
   .progress-wrap { margin-top: 2rem; display: none; }
   .progress-wrap.visible { display: block; }
@@ -116,6 +122,11 @@
     <span class="status-msg" id="statusMsg"></span>
   </div>
 
+  <div class="error-banner" id="errorBanner">
+    <strong>Error</strong>
+    <span id="errorText"></span>
+  </div>
+
   <div class="progress-wrap" id="progressWrap">
     <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
     <div class="progress-label" id="progressLabel">Reading files…</div>
@@ -137,29 +148,45 @@
 </main>
 
 <script>
+// ─── Configuration ────────────────────────────────────────────────────────────
+// API_ENDPOINT is relative — frontend and API are served from the same Vercel domain.
+const API_ENDPOINT = '/api/proxy';
+
+// Optional: set PROXY_SECRET to match the MELLO_PROXY_SECRET env var on Vercel.
+// Leave empty ('') when the env var is not set.
+// Do NOT commit a real secret here if this repo is public — use Vercel env vars only.
+const PROXY_SECRET = '';
+
+// ─── App constants ────────────────────────────────────────────────────────────
 const SECTIONS = [
   'AM Shift Report','PM Shift Report','AM Concierge','PM Concierge',
   'Member Feedback','Lost Items','Mello House Maintenance','Mello House Housekeeping',
   'Flowers / Plants Condition','Morning Briefing Como','RSA / Incidents',
 ];
-const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-const API_ENDPOINT = 'https://mello-eod-summariser.vercel.app/api/proxy';
 
+// ─── State ────────────────────────────────────────────────────────────────────
 let files = [];
 
-const dropArea = document.getElementById('dropArea');
-const fileInput = document.getElementById('fileInput');
-const fileList  = document.getElementById('fileList');
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+const dropArea    = document.getElementById('dropArea');
+const fileInput   = document.getElementById('fileInput');
+const fileList    = document.getElementById('fileList');
 const btnGenerate = document.getElementById('btnGenerate');
-const statusMsg = document.getElementById('statusMsg');
+const statusMsg   = document.getElementById('statusMsg');
+const errorBanner = document.getElementById('errorBanner');
+const errorText   = document.getElementById('errorText');
 
+// ─── Drag & drop / file input ─────────────────────────────────────────────────
 dropArea.addEventListener('dragover', e => { e.preventDefault(); dropArea.classList.add('drag-over'); });
 dropArea.addEventListener('dragleave', () => dropArea.classList.remove('drag-over'));
 dropArea.addEventListener('drop', e => { e.preventDefault(); dropArea.classList.remove('drag-over'); addFiles([...e.dataTransfer.files]); });
 fileInput.addEventListener('change', () => { addFiles([...fileInput.files]); fileInput.value = ''; });
 
-function addFiles(newFiles) { newFiles.forEach(f => { if (!files.find(x => x.name === f.name)) files.push(f); }); renderFileList(); }
-function removeFile(name)  { files = files.filter(f => f.name !== name); renderFileList(); }
+function addFiles(newFiles) {
+  newFiles.forEach(f => { if (!files.find(x => x.name === f.name)) files.push(f); });
+  renderFileList();
+}
+function removeFile(name) { files = files.filter(f => f.name !== name); renderFileList(); }
 
 function renderFileList() {
   fileList.innerHTML = '';
@@ -172,161 +199,197 @@ function renderFileList() {
   });
   statusMsg.textContent = files.length > 0 ? `${files.length} file${files.length > 1 ? 's' : ''} loaded` : '';
   btnGenerate.disabled = files.length === 0;
+  hideError();
 }
 
 document.getElementById('btnClear').onclick = () => {
-  files = []; renderFileList();
+  files = [];
+  renderFileList();
   document.getElementById('output').classList.remove('visible');
+  hideError();
 };
 
+// ─── Error display (replaces alert) ──────────────────────────────────────────
+function showError(msg) {
+  errorText.textContent = msg;
+  errorBanner.classList.add('visible');
+  errorBanner.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function hideError() {
+  errorBanner.classList.remove('visible');
+}
+
+// ─── XLSX parsing ─────────────────────────────────────────────────────────────
 function parseFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+
     reader.onload = e => {
       try {
-        const wb  = XLSX.read(e.target.result, { type: 'binary' });
-        const ws  = wb.Sheets['EOD'];
-        if (!ws) return reject(new Error(`No EOD sheet in ${file.name}`));
+        // FIX: use readAsArrayBuffer + type:'array' (readAsBinaryString is deprecated)
+        // FIX: cellDates:true converts Excel serial date numbers to JS Date objects automatically
+        const data = new Uint8Array(e.target.result);
+        const wb   = XLSX.read(data, { type: 'array', cellDates: true });
+
+        // FIX: case-insensitive sheet name match (was exact 'EOD' only)
+        const sheetName = wb.SheetNames.find(n => n.toLowerCase() === 'eod');
+        if (!sheetName) {
+          return reject(new Error(
+            `No "EOD" sheet found in ${file.name}. ` +
+            `Sheets present: ${wb.SheetNames.join(', ')}`
+          ));
+        }
+        const ws  = wb.Sheets[sheetName];
         const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
 
+        // ── Date extraction ───────────────────────────────────────────────────
+        // FIX: correctly handle all three date cell types:
+        //   1. JS Date object  → from cellDates:true on a real Excel date serial
+        //   2. Numeric serial  → rare fallback; manually convert with parse_date_code
+        //   3. String          → free-text date entry
         let date = null;
         outer: for (const row of raw) {
           for (let i = 0; i < row.length; i++) {
             if (typeof row[i] === 'string' && row[i].toLowerCase().includes('date')) {
               const next = row[i + 1];
-              if (next) { date = next instanceof Date ? next : typeof next === 'number' ? XLSX.SSF.parse_date_code(next) : new Date(next); break outer; }
+              if (next === undefined || next === '') continue;
+              if (next instanceof Date && !isNaN(next)) {
+                date = next; break outer;
+              } else if (typeof next === 'number') {
+                // cellDates:true should prevent this, but handle it as a safety net
+                const p = XLSX.SSF.parse_date_code(next);
+                date = new Date(p.y, p.m - 1, p.d);
+                if (!isNaN(date)) break outer;
+              } else if (typeof next === 'string' && next.trim()) {
+                const parsed = new Date(next);
+                if (!isNaN(parsed)) { date = parsed; break outer; }
+              }
             }
           }
         }
 
+        // ── Section extraction ────────────────────────────────────────────────
         const sectionRows = {};
         raw.forEach((row, ri) => row.forEach(cell => {
-          if (typeof cell === 'string') SECTIONS.forEach(s => {
-            if (cell.toLowerCase().trim() === s.toLowerCase().trim() && !(s in sectionRows)) sectionRows[s] = ri;
-          });
+          if (typeof cell === 'string') {
+            SECTIONS.forEach(s => {
+              if (cell.toLowerCase().trim() === s.toLowerCase().trim() && !(s in sectionRows)) {
+                sectionRows[s] = ri;
+              }
+            });
+          }
         }));
 
         const sorted = Object.entries(sectionRows).sort((a, b) => a[1] - b[1]);
-        const data   = {};
+        const sectionData = {};
         sorted.forEach(([sec, startRow], idx) => {
-          const endRow = idx + 1 < sorted.length ? sorted[idx + 1][1] : startRow + 12;
+          const endRow = idx + 1 < sorted.length ? sorted[idx + 1][1] : startRow + 30;
           const lines  = [];
-          for (let r = startRow + 1; r < Math.min(endRow, startRow + 12); r++) {
-            const vals = (raw[r] || []).map(v => String(v).trim()).filter(v => v && v !== '0');
+          // FIX: cap raised from 12 to 30 rows to prevent silent content truncation
+          for (let r = startRow + 1; r < Math.min(endRow, startRow + 30); r++) {
+            const vals = (raw[r] || [])
+              .map(v => String(v).trim())
+              .filter(v => v && v !== '0' && v !== 'false');
             if (vals.length) lines.push(vals.join(' | '));
           }
-          data[sec] = lines.join('\n').trim();
+          sectionData[sec] = lines.join('\n').trim();
         });
 
-        resolve({ file: file.name, date, data });
-      } catch (err) { reject(err); }
+        // Send ISO date string to server for consistent parsing
+        const isoDate = date
+          ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+          : null;
+
+        resolve({ file: file.name, date: isoDate, data: sectionData });
+      } catch (err) {
+        reject(err);
+      }
     };
-    reader.onerror = reject;
-    reader.readAsBinaryString(file);
+
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    // FIX: readAsArrayBuffer replaces deprecated readAsBinaryString
+    reader.readAsArrayBuffer(file);
   });
 }
 
+// ─── Generate ─────────────────────────────────────────────────────────────────
 document.getElementById('btnGenerate').onclick = async () => {
+  hideError();
   setLoading(true, 'Parsing spreadsheets…');
   document.getElementById('progressWrap').classList.add('visible');
   setProgress(0, 'Reading files…');
+
   try {
-    const results = [];
+    // Parse all files
+    const days = [];
     for (let i = 0; i < files.length; i++) {
       setProgress(Math.round((i / files.length) * 50), `Parsing ${files[i].name}…`);
-      results.push(await parseFile(files[i]));
+      days.push(await parseFile(files[i]));
     }
-    results.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    days.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+
     setProgress(60, 'Generating summary with AI…');
     setLoading(true, 'Generating summary…');
-    const summary = await generateSummary(results);
+
+    // FIX: send {days} to proxy — not a raw Anthropic request body.
+    //      Prompt construction, model, and max_tokens are all server-side now.
+    const headers = { 'Content-Type': 'application/json' };
+    if (PROXY_SECRET) headers['X-Mello-Secret'] = PROXY_SECRET;
+
+    const resp = await fetch(API_ENDPOINT, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ days }),
+    });
+
+    // FIX: proxy now returns the summary JSON directly (not the Anthropic envelope)
+    const summary = await resp.json();
+
+    if (!resp.ok) {
+      throw new Error(summary?.error || `Server error ${resp.status}`);
+    }
+
+    // FIX: guard against missing sections before rendering
+    if (!summary.sections || !Array.isArray(summary.sections)) {
+      throw new Error('Unexpected response from server — missing sections field.');
+    }
+
     setProgress(100, 'Done');
     renderSummary(summary);
+
   } catch (err) {
-    alert('Error: ' + err.message);
+    showError(err.message);
     console.error(err);
   }
+
   setLoading(false);
   document.getElementById('progressWrap').classList.remove('visible');
 };
 
-async function generateSummary(days) {
-  const dayBlocks = days.map(d => {
-    const dateStr = d.date ? formatDate(d.date) : d.file;
-    const dayName = d.date ? DAY_NAMES[new Date(d.date).getDay()] : '?';
-    let block = `=== ${dayName} ${dateStr} ===\n`;
-    SECTIONS.forEach(s => { block += `\n[${s}]\n${(d.data[s] || 'NTR').replace(/£/g, '$')}\n`; });
-    return block;
-  }).join('\n\n');
-
-  const prompt = `You are summarising a week of End-of-Day (EOD) reports from Mello House, a private members' club in Australia. Always use $ for currency, never £.
-
-Here is the raw data extracted from each day's EOD report:
-
-${dayBlocks}
-
-Write a concise weekly summary — one short paragraph (3–5 sentences max) per category. Do NOT use bullet points — prose only. Synthesise all days into one narrative per category. Mention key names, numbers and notable events but keep it tight. Always use $ (not £) for any currency. Use professional hospitality tone. Return JSON only in this exact shape:
-
-{
-  "weekRange": "e.g. 2–7 February 2026",
-  "sections": [
-    { "title": "AM Shift Report", "body": "..." },
-    { "title": "PM Shift Report", "body": "..." },
-    { "title": "AM Concierge", "body": "..." },
-    { "title": "PM Concierge", "body": "..." },
-    { "title": "Member Feedback", "body": "..." },
-    { "title": "Lost Items", "body": "..." },
-    { "title": "Mello House Maintenance", "body": "..." },
-    { "title": "Mello House Housekeeping", "body": "..." },
-    { "title": "Flowers / Plants Condition", "body": "..." },
-    { "title": "Morning Briefing Como", "body": "..." },
-    { "title": "RSA / Incidents", "body": "..." }
-  ]
-}
-
-Return ONLY the JSON, no markdown, no backticks.`;
-
-  const resp = await fetch(API_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'claude-sonnet-4-20250514', max_tokens: 4000, messages: [{ role: 'user', content: prompt }] })
-  });
-
-  if (!resp.ok) {
-    const t = await resp.json().catch(() => ({}));
-    throw new Error(`API error ${resp.status}: ${t?.error?.message || JSON.stringify(t)}`);
-  }
-  const data  = await resp.json();
-  const text  = data.content.map(c => c.text || '').join('');
-  const clean = text.replace(/```json|```/g, '').trim();
-  return JSON.parse(clean);
-}
-
+// ─── Render ───────────────────────────────────────────────────────────────────
 function renderSummary(summary) {
-  document.getElementById('weekTitle').textContent = summary.weekRange || '';
+  document.getElementById('weekTitle').textContent = summary.weekRange || '—';
   const container = document.getElementById('summaryContent');
   container.innerHTML = '';
+
   summary.sections.forEach(sec => {
     const div = document.createElement('div');
     div.className = 'summary-section';
     const isNTR = !sec.body || sec.body.trim().toUpperCase() === 'NTR';
     div.innerHTML = `
-      <div class="section-heading">${sec.title}</div>
+      <div class="section-heading">${sec.title || ''}</div>
       <div class="section-body">${isNTR
         ? '<span class="ntr-tag">Nothing to report</span>'
         : sec.body.split('\n').filter(Boolean).map(p => `<p>${p}</p>`).join('')
       }</div>`;
     container.appendChild(div);
   });
+
   document.getElementById('output').classList.add('visible');
   document.getElementById('output').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function formatDate(d) {
-  if (!d) return '';
-  const dt = d instanceof Date ? d : new Date(d);
-  return isNaN(dt) ? String(d) : dt.toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' });
-}
+// ─── UI helpers ───────────────────────────────────────────────────────────────
 function setLoading(on, text = '') {
   document.getElementById('loadingText').textContent = text;
   document.getElementById('loading').classList.toggle('visible', on);
@@ -336,16 +399,18 @@ function setProgress(pct, label) {
   document.getElementById('progressLabel').textContent = label;
 }
 
+// ─── Export ───────────────────────────────────────────────────────────────────
 document.getElementById('btnPrint').onclick = () => window.print();
 document.getElementById('btnCopyText').onclick = () => {
   let text = document.getElementById('weekTitle').textContent + '\n\n';
   document.querySelectorAll('.summary-section').forEach(s => {
-    text += `## ${s.querySelector('.section-heading').textContent}\n\n${s.querySelector('.section-body').textContent.trim()}\n\n`;
+    text += `## ${s.querySelector('.section-heading').textContent}\n\n`;
+    text += `${s.querySelector('.section-body').textContent.trim()}\n\n`;
   });
   navigator.clipboard.writeText(text).then(() => {
     const btn = document.getElementById('btnCopyText');
     btn.textContent = 'Copied!';
-    setTimeout(() => btn.textContent = 'Copy as text', 1800);
+    setTimeout(() => { btn.textContent = 'Copy as text'; }, 1800);
   });
 };
 </script>
