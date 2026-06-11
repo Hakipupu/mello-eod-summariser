@@ -6,7 +6,7 @@ const PROXY_SECRET   = process.env.MELLO_PROXY_SECRET;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 const MODEL          = 'claude-sonnet-4-20250514';
 const MAX_TOKENS     = 4000;
-const TIMEOUT_MS     = 25_000; // Netlify free tier has 26s max
+const TIMEOUT_MS     = 20_000; // fail fast so Netlify can return a clean error
 const MAX_BODY_BYTES = 300_000;
 const MAX_DAYS       = 14;
 
