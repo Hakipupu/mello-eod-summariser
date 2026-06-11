@@ -149,12 +149,12 @@
 
 <script>
 // ─── Configuration ────────────────────────────────────────────────────────────
-// API_ENDPOINT is relative — frontend and API are served from the same Vercel domain.
+// API_ENDPOINT — frontend served from GitHub Pages, API from Netlify Functions.
 const API_ENDPOINT = 'https://tangerine-blancmange-21886d.netlify.app/.netlify/functions/proxy';
 
-// Optional: set PROXY_SECRET to match the MELLO_PROXY_SECRET env var on Vercel.
+// Optional: set PROXY_SECRET to match the MELLO_PROXY_SECRET env var on Netlify.
 // Leave empty ('') when the env var is not set.
-// Do NOT commit a real secret here if this repo is public — use Vercel env vars only.
+// Do NOT commit a real secret here if this repo is public — use Netlify env vars only.
 const PROXY_SECRET = '';
 
 // ─── App constants ────────────────────────────────────────────────────────────
